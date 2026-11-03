@@ -1,14 +1,14 @@
 # Task 4: Deployment topologies and trade-offs
 
-**Name / ชื่อ:**
+**Name / ชื่อ:** ยสินทร สันนิภางกูร
 
-**Student ID / รหัสนิสิต:**
+**Student ID / รหัสนิสิต:** 6630275021
 
 This is **individual work**: each student completes and submits their own copy, in their own fork.
 
 *งานนี้เป็น**งานเดี่ยว** นิสิตแต่ละคนทำและส่งงานของตัวเอง ใน fork ของตัวเอง*
 
-**Scenario (A, B or C) / Scenario ที่เลือก:**
+**Scenario (A, B or C) / Scenario ที่เลือก:** A
 
 Choose **one** scenario below. If the last digit of your student ID is odd, take A or B; if it is even, take B or C. Use your measurements from Tutorial 6 as evidence: cite run names from `results/runs.csv`. Answer in Thai or English.
 
@@ -58,9 +58,9 @@ The three most important quality requirements for your scenario, each with a num
 
 | # | Quality | Requirement |
 |---|---|---|
-| 1 | | |
-| 2 | | |
-| 3 | | |
+| 1 | Accuracy | alert ต้องถูกอย่างน้อย 91% เพื่อไม่ให้เกิดความเข้าใจผิด |
+| 2 | Performance | เมื่อมีข้อความมา 40review/s ต้อง alert ข้อความลบภายใน 95% ของ alert 2วินาที |
+| 3 | Capacity | การันตีในช่วงพีค 40รีวิว/s ตาม large model โดยเรียก large ไม่เกิน 20 calls/s |
 
 ## 2. Design / การออกแบบ
 
@@ -68,16 +68,26 @@ Your topology, the patterns you add, and a container-level diagram (C4 level 2).
 
 *topology ที่เลือก pattern ที่เพิ่ม และ diagram ระดับ container (C4 level 2) เขียนด้วย Mermaid*
 
+**Topology:** T1
+
+**Patterns:** fallback, cache, cascade
+
 ```mermaid
 C4Container
-    title Your design: container diagram
-    %% Replace the example below with your own people, containers and relationships.
-    %% See the CampusEats C4 diagram in README.md for the full syntax.
+    title CampusEats owner alerts: container diagram
     Person(customer, "Customer", "Writes restaurant reviews")
+    Person(restaurant, "Restaurant Owner", "Receives push notifications for negative reviews")
     System_Boundary(campuseats, "CampusEats") {
-        Container(review, "Review service", "Python, FastAPI", "What it does")
+        Container(api, "API Gateway", "Python, FastAPI", "Single entry point for clients")
+        Container(review, "Review service", "Python, FastAPI", "Saves reviews, waits at most 1 s for a label, saves as pending on timeout or error")
+        Container(inference, "Inference service", "Python, FastAPI, scikit-learn", "Cascade small to large at threshold 0.7, LRU prediction cache")
+        Container(notification, "Notification service", "Python", "Alerts the owner only for scored negative reviews, never for pending")
     }
-    Rel(customer, review, "Posts reviews", "HTTP/JSON")
+    Rel(customer, api, "Posts reviews", "HTTP/JSON")
+    Rel(api, review, "Forwards reviews", "HTTP/JSON")
+    Rel(review, inference, "POST /predict, timeout 1 s", "REST")
+    Rel(review, notification, "Sends negative review alert", "HTTP/JSON")
+    Rel(notification, restaurant, "Push notification", "Mobile push")
 ```
 
 ## 3. Evidence / หลักฐาน
@@ -88,8 +98,15 @@ Which runs support your choice? Show the numbers and, for scenario A, the capaci
 
 | Run | What it shows / แสดงอะไร |
 |---|---|
-| | |
-| | |
+| t3-cache | accuracy 93% >= 91%, p95 545ms < 2s, large calls 38% = 15.2calls/s < 20 ผ่านทั้งสามข้อ  |
+| t2-0.7 | large calls 53% = 21.2 calls/s เกินเพดาน 20 ส่วน accuracy 93.0% เท่ากับ t3-cache แปลว่า cache ลด cost ได้โดย accuracy ไม่ลดลง |
+| t1-after | errors ลดจาก 18 ใน t1-before เหลือ 0, รีวิว pending 25 รายการไม่หาย และไม่ถูกส่ง alert| 
+| t0-large | 40 calls/s เกินเพดานไปเท่าตัว ระบบรับช่วงพีคไม่ได้ |
+
+t0-large: 40 x 100% = 40call/s    เกิน
+t2-0.7: 40 x 53% = 21.2calls/s    เกิน
+t3-cache: 40 x 38% = 15.2calls/s  ผ่าน
+design ใช้ 15.2 calls/s เหลือว่าง 4.8 calls/s ถ้า cache hit จริงต่ำกว่าที่วัด จนเกิน 20 คิวจะยาวขึ้นและ request จะ timeout กลายเป็น pending ซึ่งแปลว่าพลาด alert ไม่ใช่ alert ผิด จึงยังยอมรับได้ตามโจทย์
 
 ## 4. ADR
 
@@ -97,20 +114,20 @@ Use the ADR format from W5.
 
 *ใช้รูปแบบ ADR จาก W5*
 
-**Title:**
+**Title:** แจ้งเตือนรีวิวเชิงลบให้กับเจ้าของร้านด้วย T1 และ pattern fallback, cascade, cache
 
 **Status:** Proposed
 
-**Context:**
+**Context:** ต้องส่ง alert ภายใน 2 วินาที, ช่วงพีคมี 40รีวิว/s แต่ large รับได้ 20calls/s, alert ผิดแย่กว่าพลาดการ alert
 
-**Decision:**
+**Decision:** ใช้ topology 1, ใช้ pattern ทั้งสาม fallback, cascade และ cache. รีวิวที่เป็นเชิงลบเท่านั้นที่จะ alert. timeout 1s, threshold 0.7 และ LRU cache. ไม่ส่ง alert ให้กับ review pending
 
 **Consequences:**
-- Positive:
-- Negative:
+- Positive: t3-cache ได้ accuracy 93% ผ่านเป้า 91% ทำให้ alert ส่วนใหญ่ถูกต้องและเจ้าของร้านเชื่อถือ. p95 ของ t3-cache อยู่ที่ 545ms ต่ำกว่าเป้า 2s. large calls ลดจาก 100% ใน t0-large เหลือ 38% ใน t3-cache. ใช้ large 15.2 calls/s ต่ำกว่าเพดาน 20calls/s
+- Negative: margin เหลือแค่ 4.8calls/s และขึ้นกับ cache hits ด้วย. รีวิว pending ไม่ได้รับ alert เลย. ถ้าเปลี่ยน model ใหม่ ต้องล้าง cache เก่า และออกแบบโดยใส่ model version ใน cache key 
 
 **Alternatives considered:** at least one topology you rejected, and why.
 
 *อย่างน้อยหนึ่ง topology ที่ไม่เลือก และเหตุผล*
 
->
+>T4 ไม่เหมาะกับกรณีที่ต้องส่งไปให้ถึงภายใน 2วินาที ในช่วงที่มี request 40reviews/s จะส่งทีหลังเป็นชุด ทำให้ส่งไปไม่ทัน
